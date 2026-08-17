@@ -1,0 +1,47 @@
+name: Security Sprint 3 Durable TÜV
+
+on:
+  push:
+    branches:
+      - security-hardening-sprint3-impl
+  workflow_dispatch:
+
+jobs:
+  durable-tuv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Gateway attack and durable replay tests
+        run: npm test
+      - name: Wrangler compile dry-run
+        run: npx wrangler deploy --dry-run
+      - name: Dependency vulnerability audit
+        run: npm audit --audit-level=high
+      - name: Durable security assertions
+        run: |
+          set -euo pipefail
+          grep -q "kc_security_devices" src/security-store.js
+          grep -q "kc_security_nonces" src/security-store.js
+          grep -q "ON CONFLICT (device_id,nonce) DO NOTHING" src/security-store.js
+          grep -q "deviceResolver" src/security.js
+          grep -q "replayStore" src/security.js
+          grep -q "resolveDeviceFromStore" src/secure-worker.js
+          grep -q "reserveNonceInStore" src/secure-worker.js
+          echo 'Durable registry/replay assertions passed.'
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
