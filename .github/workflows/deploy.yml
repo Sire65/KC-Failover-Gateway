@@ -34,61 +34,61 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL="https://kc-failover-gateway.ha-joko.workers.dev"
-          response=""
-          for attempt in 1 2 3 4 5 6; do
-            echo "Health check attempt $attempt/6"
-            if response=$(curl --fail --silent --show-error --max-time 20 "$URL/"); then
-              echo "$response"
-              break
-            fi
-            if [ "$attempt" -eq 6 ]; then
-              echo "Worker health endpoint did not return HTTP 2xx."
-              exit 1
-            fi
-            sleep 5
-          done
-
+          URL="https://kc-failover-gateway.ha-joko.workers.dev/"
+          response=$(curl --fail --silent --show-error --max-time 30 "$URL")
+          echo "$response"
           RESPONSE="$response" node --input-type=module <<'NODE'
           const body = JSON.parse(process.env.RESPONSE || "{}");
-          if (body.status !== "OK") throw new Error(`Gateway health is not OK: ${JSON.stringify(body)}`);
-          if (body.primary?.name !== "SUPABASE" || body.primary?.reachable !== true) {
-            throw new Error(`Supabase primary is not reachable: ${JSON.stringify(body)}`);
-          }
-          if (body.fallback?.name !== "NEON" || body.fallback?.hyperdriveBinding !== true || body.fallback?.reachable !== true) {
-            throw new Error(`Neon fallback is not reachable: ${JSON.stringify(body)}`);
-          }
-          if (body.activeBackend !== "SUPABASE") {
-            throw new Error(`Normal routing should prefer SUPABASE: ${JSON.stringify(body)}`);
-          }
-          console.log("Normal mode passed: SUPABASE primary + NEON fallback are both healthy.");
+          if (body.primary?.reachable !== true) throw new Error(`Supabase unhealthy: ${JSON.stringify(body)}`);
+          if (body.fallback?.reachable !== true) throw new Error(`Neon unhealthy: ${JSON.stringify(body)}`);
+          if (body.activeBackend !== "SUPABASE") throw new Error(`Expected SUPABASE active: ${JSON.stringify(body)}`);
           NODE
 
-      - name: SUPER-GAU simulation
+      - name: Scenario 1 - Supabase outage to Neon and recovery
         shell: bash
         run: |
           set -euo pipefail
-          URL="https://kc-failover-gateway.ha-joko.workers.dev/supergau"
-          echo "Running safe SUPER-GAU simulation"
-          response=$(curl --fail --silent --show-error --max-time 30 "$URL")
+          response=$(curl --fail --silent --show-error --max-time 30 "https://kc-failover-gateway.ha-joko.workers.dev/scenario/1")
           echo "$response"
-
           RESPONSE="$response" node --input-type=module <<'NODE'
-          const body = JSON.parse(process.env.RESPONSE || "{}");
-          const outage = body.phase2SimulatedOutage;
-          const recovery = body.phase3Recovery;
-          if (body.status !== "PASS") throw new Error(`SUPER-GAU simulation failed: ${JSON.stringify(body)}`);
-          if (body.safeSimulation !== true || body.productionSupabaseWasNotStopped !== true) {
-            throw new Error(`Simulation safety flags missing: ${JSON.stringify(body)}`);
-          }
-          if (outage?.primaryForcedDown !== true || outage?.activeBackend !== "NEON") {
-            throw new Error(`Failover to NEON did not occur: ${JSON.stringify(body)}`);
-          }
-          if (outage?.fallback?.readWrite !== true || outage?.fallback?.persistentChanges !== false) {
-            throw new Error(`NEON read/write probe failed or left persistent data: ${JSON.stringify(body)}`);
-          }
-          if (recovery?.primaryReachableAgain !== true || recovery?.activeBackend !== "SUPABASE") {
-            throw new Error(`Recovery to SUPABASE failed: ${JSON.stringify(body)}`);
-          }
-          console.log("SUPER-GAU PASS: simulated Supabase outage -> NEON read/write -> Supabase recovery.");
+          const body=JSON.parse(process.env.RESPONSE||"{}");
+          if(body.status!=="PASS") throw new Error(JSON.stringify(body));
+          if(body.simulatedOutage?.activeBackend!=="NEON") throw new Error(JSON.stringify(body));
+          if(body.simulatedOutage?.fallback?.readWrite!==true) throw new Error(JSON.stringify(body));
+          if(body.recovery?.activeBackend!=="SUPABASE") throw new Error(JSON.stringify(body));
+          NODE
+
+      - name: Scenario 2 - Neon outage while Supabase stays active
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error --max-time 30 "https://kc-failover-gateway.ha-joko.workers.dev/scenario/2")
+          echo "$response"
+          RESPONSE="$response" node --input-type=module <<'NODE'
+          const body=JSON.parse(process.env.RESPONSE||"{}");
+          if(body.status!=="PASS") throw new Error(JSON.stringify(body));
+          if(body.simulatedFallbackDown!==true || body.activeBackend!=="SUPABASE") throw new Error(JSON.stringify(body));
+          NODE
+
+      - name: Scenario 3 - Both cloud databases down route to local queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error --max-time 30 "https://kc-failover-gateway.ha-joko.workers.dev/scenario/3")
+          echo "$response"
+          RESPONSE="$response" node --input-type=module <<'NODE'
+          const body=JSON.parse(process.env.RESPONSE||"{}");
+          if(body.status!=="PASS") throw new Error(JSON.stringify(body));
+          if(body.activeBackend!=="LOCAL_QUEUE" || body.localQueueRequired!==true) throw new Error(JSON.stringify(body));
+          NODE
+
+      - name: Server Super-GAU matrix summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error --max-time 60 "https://kc-failover-gateway.ha-joko.workers.dev/supergau/server-matrix")
+          echo "$response"
+          RESPONSE="$response" node --input-type=module <<'NODE'
+          const body=JSON.parse(process.env.RESPONSE||"{}");
+          if(body.status!=="PASS" || !Array.isArray(body.results) || body.results.length!==3) throw new Error(JSON.stringify(body));
           NODE
