@@ -1,0 +1,58 @@
+name: Security Sprint 2 TÜV
+
+on:
+  push:
+    branches:
+      - security-hardening-sprint2-impl
+  workflow_dispatch:
+
+jobs:
+  security-tuv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: All gateway security tests
+        run: npm test
+
+      - name: Wrangler compile dry-run
+        run: npx wrangler deploy --dry-run
+
+      - name: Dependency vulnerability audit
+        run: npm audit --audit-level=high
+
+      - name: Security architecture assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "KC_DEVICE_PUBLIC_KEYS_JSON" src/security.js
+          grep -q "ECDSA-P256" src/security.js
+          grep -q "DEVICE_REVOKED" src/security.js
+          grep -q "KEY_VERSION_MISMATCH" src/security.js
+          grep -q "x-kc-key-version" src/security.js
+          if grep -Eiq '(privateKey|deviceSecret|masterKey)[[:space:]]*=[[:space:]]*["'"'][A-Za-z0-9_-]{24,}' src/*.js; then
+            echo 'Possible embedded secret found'
+            exit 1
+          fi
+          echo 'Sprint 2 asymmetric policy assertions passed.'
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
