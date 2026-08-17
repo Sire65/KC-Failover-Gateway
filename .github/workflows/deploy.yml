@@ -29,3 +29,41 @@ jobs:
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Live Worker + Hyperdrive health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://kc-failover-gateway.ha-joko.workers.dev"
+          echo "Testing $URL"
+
+          response=""
+          for attempt in 1 2 3 4 5 6; do
+            echo "Health check attempt $attempt/6"
+            if response=$(curl --fail --silent --show-error --max-time 20 "$URL"); then
+              echo "$response"
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "Worker health endpoint did not return HTTP 2xx."
+              exit 1
+            fi
+            sleep 5
+          done
+
+          RESPONSE="$response" node --input-type=module <<'NODE'
+          const body = JSON.parse(process.env.RESPONSE || "{}");
+          if (body.status !== "OK") {
+            console.error("Health status is not OK:", body);
+            process.exit(1);
+          }
+          if (body.hyperdriveBinding !== true) {
+            console.error("Hyperdrive binding is not active:", body);
+            process.exit(1);
+          }
+          if (body.database?.connected !== true || body.database?.query !== "SELECT 1") {
+            console.error("Live PostgreSQL/Hyperdrive database check failed:", body);
+            process.exit(1);
+          }
+          console.log("Live Worker -> Hyperdrive -> PostgreSQL health check passed.");
+          NODE
