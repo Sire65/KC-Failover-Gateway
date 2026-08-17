@@ -2,10 +2,17 @@
 
 Cloudflare Worker repository for the KC Supabase -> Neon failover path.
 
-Current bootstrap state:
+Current state:
 - Worker entrypoint: `src/worker.js`
 - Production branch: `main`
-- Cloudflare Hyperdrive binding expected at runtime as `HYPERDRIVE`
-- First deployment is a non-destructive binding/health test only
+- Cloudflare Hyperdrive binding: `HYPERDRIVE`
+- Primary health target: Supabase
+- Fallback database: Neon via Hyperdrive
+- Safe non-destructive Super-GAU routing tests are executed in GitHub Actions.
 
-The initial Worker performs no database writes. It only reports whether the Hyperdrive binding is available.
+Automated server scenarios:
+1. Supabase simulated down -> Neon read/write probe -> Supabase recovery.
+2. Neon simulated down -> Supabase remains active.
+3. Supabase and Neon simulated down -> gateway routes to `LOCAL_QUEUE` requirement.
+
+Client/device scenarios (offline POS, two registers, replacement device, power loss and reconciliation) are validated separately against the KC MarktKasse implementation. The gateway does not claim those client/hardware tests as passed by itself.
