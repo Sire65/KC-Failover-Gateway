@@ -4,7 +4,7 @@ const { Client } = pg;
 
 async function checkSupabase(env) {
   const startedAt = Date.now();
-  const url = `${env.SUPABASE_URL}/rest/v1/`;
+  const url = `${env.SUPABASE_URL}/auth/v1/health`;
   try {
     const response = await fetch(url, {
       method: "GET",
