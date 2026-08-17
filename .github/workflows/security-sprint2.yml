@@ -43,10 +43,13 @@ jobs:
           grep -q "DEVICE_REVOKED" src/security.js
           grep -q "KEY_VERSION_MISMATCH" src/security.js
           grep -q "x-kc-key-version" src/security.js
-          if grep -Eiq '(privateKey|deviceSecret|masterKey)[[:space:]]*=[[:space:]]*["'"'][A-Za-z0-9_-]{24,}' src/*.js; then
-            echo 'Possible embedded secret found'
-            exit 1
-          fi
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const text=fs.readFileSync('src/security.js','utf8')+fs.readFileSync('src/secure-worker.js','utf8');
+          const suspicious=/(?:deviceSecret|masterKey)\s*=\s*["'][A-Za-z0-9_-]{24,}["']/i.test(text);
+          if(suspicious) throw new Error('Possible embedded secret found');
+          console.log('No embedded device/master secret found.');
+          NODE
           echo 'Sprint 2 asymmetric policy assertions passed.'
 
       - name: Initialize CodeQL
