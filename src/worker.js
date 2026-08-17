@@ -9,8 +9,7 @@ async function checkSupabase(env) {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        apikey: env.SUPABASE_PUBLISHABLE_KEY,
-        Authorization: `Bearer ${env.SUPABASE_PUBLISHABLE_KEY}`
+        apikey: env.SUPABASE_PUBLISHABLE_KEY
       },
       cf: { cacheTtl: 0 }
     });
