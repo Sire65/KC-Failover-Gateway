@@ -5,6 +5,10 @@
   "account_id": "d25a0f2dd12c9eed86f711e0f095fce6",
   "compatibility_date": "2026-08-17",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "SUPABASE_URL": "https://ptblnpiroqftcvlsrhac.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_SqXIeGN-clcZ4gjmpLdSww_4DLfyy24"
+  },
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
