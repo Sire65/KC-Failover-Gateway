@@ -2,6 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "kc-failover-gateway",
   "main": "src/worker.js",
+  "account_id": "d25a0f2dd12c9eed86f711e0f095fce6",
   "compatibility_date": "2026-08-17",
   "compatibility_flags": ["nodejs_compat"],
   "hyperdrive": [
