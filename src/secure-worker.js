@@ -1,6 +1,7 @@
 import worker from './worker.js';
 import { authenticateRequest, allowedOrigin, corsHeaders } from './security.js';
 import { resolveDeviceFromStore, reserveNonceInStore, purgeExpiredNonces } from './security-store.js';
+import { authorizeDeviceScope } from './security-scope.js';
 
 const PROTECTED_PREFIXES=['/sync/'];
 function isProtected(pathname){return PROTECTED_PREFIXES.some(prefix=>pathname.startsWith(prefix));}
@@ -28,6 +29,8 @@ export default {
         replayStore:(nonce)=>reserveNonceInStore(env,nonce)
       }:{});
       if(!auth.ok)return securityJson(request,env,{status:'ERROR',error:auth.code},auth.status);
+      const scope=authorizeDeviceScope(auth,request);
+      if(!scope.ok)return securityJson(request,env,{status:'ERROR',error:scope.code},scope.status);
       if(Math.random()<0.01 && ctx?.waitUntil)ctx.waitUntil(purgeExpiredNonces(env,{limit:500}).catch(()=>{}));
     }
     const response=await worker.fetch(request,env,ctx);return secureResponse(request,env,response);
