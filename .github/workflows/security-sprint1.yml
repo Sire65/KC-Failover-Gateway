@@ -1,0 +1,58 @@
+name: Security Sprint 1 TÜV
+
+on:
+  push:
+    branches:
+      - security-hardening-sprint1-impl
+  workflow_dispatch:
+
+jobs:
+  security-tuv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies reproducibly
+        run: npm ci
+
+      - name: Unit and attack tests 50+
+        run: npm test
+
+      - name: Wrangler compile dry-run
+        run: npx wrangler deploy --dry-run
+
+      - name: Dependency vulnerability audit
+        run: npm audit --audit-level=high
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: Security policy assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "KC_DEVICE_KEYS_JSON" src/security.js
+          grep -q "REPLAY_DETECTED" src/security.js
+          grep -q "ORIGIN_NOT_ALLOWED" src/secure-worker.js
+          grep -q "src/secure-worker.js" wrangler.jsonc
+          if grep -q 'access-control-allow-origin.*\*' src/secure-worker.js; then
+            echo 'Wildcard CORS found in secure boundary'
+            exit 1
+          fi
+          echo 'Sprint 1 policy assertions passed.'
