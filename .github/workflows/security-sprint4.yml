@@ -23,7 +23,7 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --ignore-scripts --no-fund
 
       - name: Full regression suite
         run: npm test
