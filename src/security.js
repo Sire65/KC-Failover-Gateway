@@ -10,23 +10,26 @@ function b64url(bytes) {
 }
 
 function fromB64url(value) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
   const bin = atob(padded);
   return Uint8Array.from(bin, c => c.charCodeAt(0));
 }
 
 async function sha256Base64Url(text) {
-  return b64url(await crypto.subtle.digest('SHA-256', encoder.encode(text)));
+  return b64url(await crypto.subtle.digest('SHA-256', encoder.encode(String(text ?? ''))));
 }
 
-function parseDeviceKeys(env) {
-  if (!env.KC_DEVICE_KEYS_JSON) return null;
+function parseJsonObject(value) {
+  if (!value) return null;
   let parsed;
-  try { parsed = JSON.parse(env.KC_DEVICE_KEYS_JSON); } catch { return null; }
+  try { parsed = JSON.parse(value); } catch { return null; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   return parsed;
 }
+
+function parseDeviceKeys(env) { return parseJsonObject(env.KC_DEVICE_KEYS_JSON); }
+function parseDevicePublicKeys(env) { return parseJsonObject(env.KC_DEVICE_PUBLIC_KEYS_JSON); }
 
 function cleanupReplayCache(nowSeconds) {
   for (const [key, expires] of replayCache) if (expires <= nowSeconds) replayCache.delete(key);
@@ -51,7 +54,7 @@ export function corsHeaders(request, env) {
   const origin = allowedOrigin(request, env);
   const headers = {
     'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type,x-kc-client,x-kc-device-id,x-kc-timestamp,x-kc-nonce,x-kc-signature',
+    'access-control-allow-headers': 'content-type,x-kc-client,x-kc-device-id,x-kc-key-version,x-kc-timestamp,x-kc-nonce,x-kc-signature',
     'access-control-max-age': '600',
     'vary': 'Origin'
   };
@@ -62,7 +65,7 @@ export function corsHeaders(request, env) {
 export async function buildCanonicalRequest(method, url, timestamp, nonce, bodyText) {
   const parsed = new URL(url);
   const bodyHash = await sha256Base64Url(bodyText || '');
-  return [method.toUpperCase(), `${parsed.pathname}${parsed.search}`, String(timestamp), nonce, bodyHash].join('\n');
+  return [String(method).toUpperCase(), `${parsed.pathname}${parsed.search}`, String(timestamp), String(nonce), bodyHash].join('\n');
 }
 
 export async function signCanonical(secretB64url, canonical) {
@@ -70,40 +73,81 @@ export async function signCanonical(secretB64url, canonical) {
   return b64url(await crypto.subtle.sign('HMAC', key, encoder.encode(canonical)));
 }
 
-export async function authenticateRequest(request, env, { nowSeconds = Math.floor(Date.now() / 1000), enforceReplay = true } = {}) {
-  const keys = parseDeviceKeys(env);
-  if (!keys) return { ok: false, status: 503, code: 'SECURITY_NOT_CONFIGURED' };
-
-  const deviceId = String(request.headers.get('x-kc-device-id') || '');
-  const timestampRaw = String(request.headers.get('x-kc-timestamp') || '');
-  const nonce = String(request.headers.get('x-kc-nonce') || '');
-  const signature = String(request.headers.get('x-kc-signature') || '');
-
-  if (!/^[A-Za-z0-9._:-]{3,100}$/.test(deviceId)) return { ok: false, status: 401, code: 'INVALID_DEVICE_ID' };
-  if (!/^\d{10}$/.test(timestampRaw)) return { ok: false, status: 401, code: 'INVALID_TIMESTAMP' };
-  if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return { ok: false, status: 401, code: 'INVALID_NONCE' };
-  if (!/^[A-Za-z0-9_-]{40,128}$/.test(signature)) return { ok: false, status: 401, code: 'INVALID_SIGNATURE' };
-
-  const timestamp = Number(timestampRaw);
-  if (Math.abs(nowSeconds - timestamp) > MAX_SKEW_SECONDS) return { ok: false, status: 401, code: 'STALE_REQUEST' };
-
-  const secret = keys[deviceId];
-  if (typeof secret !== 'string' || secret.length < 43) return { ok: false, status: 401, code: 'UNKNOWN_DEVICE' };
-
-  const bodyText = request.method === 'GET' || request.method === 'HEAD' ? '' : await request.clone().text();
-  const canonical = await buildCanonicalRequest(request.method, request.url, timestampRaw, nonce, bodyText);
-  const key = await crypto.subtle.importKey('raw', fromB64url(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+export async function verifyEcdsaCanonical(publicJwk, canonical, signature) {
+  if (!publicJwk || publicJwk.kty !== 'EC' || publicJwk.crv !== 'P-256' || !publicJwk.x || !publicJwk.y || publicJwk.d) return false;
   let supplied;
-  try { supplied = fromB64url(signature); } catch { return { ok: false, status: 401, code: 'INVALID_SIGNATURE' }; }
-  const verified = await crypto.subtle.verify('HMAC', key, supplied, encoder.encode(canonical));
-  if (!verified) return { ok: false, status: 401, code: 'BAD_SIGNATURE' };
-
-  cleanupReplayCache(nowSeconds);
-  const replayKey = `${deviceId}:${nonce}`;
-  if (enforceReplay && replayCache.has(replayKey)) return { ok: false, status: 409, code: 'REPLAY_DETECTED' };
-  if (enforceReplay) replayCache.set(replayKey, nowSeconds + MAX_SKEW_SECONDS + 5);
-
-  return { ok: true, deviceId, bodyText, timestamp, nonce };
+  try { supplied = fromB64url(signature); } catch { return false; }
+  try {
+    const key = await crypto.subtle.importKey('jwk', { kty:'EC', crv:'P-256', x:publicJwk.x, y:publicJwk.y, ext:true, key_ops:['verify'] }, { name:'ECDSA', namedCurve:'P-256' }, false, ['verify']);
+    return crypto.subtle.verify({ name:'ECDSA', hash:'SHA-256' }, key, supplied, encoder.encode(canonical));
+  } catch { return false; }
 }
 
-export const securityConstants = Object.freeze({ MAX_SKEW_SECONDS });
+function basicHeaders(request) {
+  return {
+    deviceId: String(request.headers.get('x-kc-device-id') || ''),
+    keyVersionRaw: String(request.headers.get('x-kc-key-version') || '1'),
+    timestampRaw: String(request.headers.get('x-kc-timestamp') || ''),
+    nonce: String(request.headers.get('x-kc-nonce') || ''),
+    signature: String(request.headers.get('x-kc-signature') || '')
+  };
+}
+
+function validateHeaders(h, nowSeconds) {
+  if (!/^[A-Za-z0-9._:-]{3,100}$/.test(h.deviceId)) return { ok:false,status:401,code:'INVALID_DEVICE_ID' };
+  if (!/^\d{1,9}$/.test(h.keyVersionRaw) || Number(h.keyVersionRaw) < 1) return { ok:false,status:401,code:'INVALID_KEY_VERSION' };
+  if (!/^\d{10}$/.test(h.timestampRaw)) return { ok:false,status:401,code:'INVALID_TIMESTAMP' };
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(h.nonce)) return { ok:false,status:401,code:'INVALID_NONCE' };
+  if (!/^[A-Za-z0-9_-]{40,200}$/.test(h.signature)) return { ok:false,status:401,code:'INVALID_SIGNATURE' };
+  const timestamp = Number(h.timestampRaw);
+  if (Math.abs(nowSeconds - timestamp) > MAX_SKEW_SECONDS) return { ok:false,status:401,code:'STALE_REQUEST' };
+  return { ok:true,timestamp,keyVersion:Number(h.keyVersionRaw) };
+}
+
+async function verifyAsymmetric(request, registry, h, canonical, keyVersion) {
+  const entry = registry[h.deviceId];
+  if (!entry || typeof entry !== 'object') return { ok:false,status:401,code:'UNKNOWN_DEVICE' };
+  if (String(entry.status || 'active').toLowerCase() !== 'active') return { ok:false,status:403,code:'DEVICE_REVOKED' };
+  if (Number(entry.keyVersion || 1) !== keyVersion) return { ok:false,status:401,code:'KEY_VERSION_MISMATCH' };
+  if (entry.registerId && !/^[A-Za-z0-9._:-]{3,100}$/.test(String(entry.registerId))) return { ok:false,status:503,code:'INVALID_DEVICE_REGISTRY' };
+  const verified = await verifyEcdsaCanonical(entry.publicJwk, canonical, h.signature);
+  if (!verified) return { ok:false,status:401,code:'BAD_SIGNATURE' };
+  return { ok:true,authMode:'ECDSA-P256',registerId:entry.registerId || null };
+}
+
+async function verifyLegacyHmac(env, keys, h, canonical) {
+  const secret = keys[h.deviceId];
+  if (typeof secret !== 'string' || secret.length < 43) return { ok:false,status:401,code:'UNKNOWN_DEVICE' };
+  const key = await crypto.subtle.importKey('raw', fromB64url(secret), { name:'HMAC', hash:'SHA-256' }, false, ['verify']);
+  let supplied;
+  try { supplied = fromB64url(h.signature); } catch { return { ok:false,status:401,code:'INVALID_SIGNATURE' }; }
+  const verified = await crypto.subtle.verify('HMAC', key, supplied, encoder.encode(canonical));
+  if (!verified) return { ok:false,status:401,code:'BAD_SIGNATURE' };
+  return { ok:true,authMode:'HMAC-SHA256',registerId:null };
+}
+
+export async function authenticateRequest(request, env, { nowSeconds = Math.floor(Date.now() / 1000), enforceReplay = true } = {}) {
+  const publicRegistry = parseDevicePublicKeys(env);
+  const legacyKeys = parseDeviceKeys(env);
+  if (!publicRegistry && !legacyKeys) return { ok:false,status:503,code:'SECURITY_NOT_CONFIGURED' };
+
+  const h = basicHeaders(request);
+  const valid = validateHeaders(h, nowSeconds);
+  if (!valid.ok) return valid;
+
+  const bodyText = request.method === 'GET' || request.method === 'HEAD' ? '' : await request.clone().text();
+  const canonical = await buildCanonicalRequest(request.method, request.url, h.timestampRaw, h.nonce, bodyText);
+  const verified = publicRegistry
+    ? await verifyAsymmetric(request, publicRegistry, h, canonical, valid.keyVersion)
+    : await verifyLegacyHmac(env, legacyKeys, h, canonical);
+  if (!verified.ok) return verified;
+
+  cleanupReplayCache(nowSeconds);
+  const replayKey = `${h.deviceId}:${h.nonce}`;
+  if (enforceReplay && replayCache.has(replayKey)) return { ok:false,status:409,code:'REPLAY_DETECTED' };
+  if (enforceReplay) replayCache.set(replayKey, nowSeconds + MAX_SKEW_SECONDS + 5);
+
+  return { ok:true,deviceId:h.deviceId,bodyText,timestamp:valid.timestamp,nonce:h.nonce,keyVersion:valid.keyVersion,...verified };
+}
+
+export const securityConstants = Object.freeze({ MAX_SKEW_SECONDS, MAX_NONCE_CACHE });
