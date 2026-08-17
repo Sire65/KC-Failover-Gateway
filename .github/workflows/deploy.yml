@@ -61,9 +61,13 @@ jobs:
             console.error("Hyperdrive binding is not active:", body);
             process.exit(1);
           }
-          if (body.database?.connected !== true || body.database?.query !== "SELECT 1") {
+          if (body.databaseReachable !== true) {
             console.error("Live PostgreSQL/Hyperdrive database check failed:", body);
             process.exit(1);
           }
-          console.log("Live Worker -> Hyperdrive -> PostgreSQL health check passed.");
+          if (typeof body.latencyMs !== "number") {
+            console.error("Database latency metric missing:", body);
+            process.exit(1);
+          }
+          console.log(`Live Worker -> Hyperdrive -> PostgreSQL health check passed in ${body.latencyMs} ms.`);
           NODE
