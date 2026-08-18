@@ -2,6 +2,12 @@
   functions = "netlify/functions"
 
 [[redirects]]
+  from = "/e2e"
+  to = "/e2e.html"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/scenario/*"
   to = "/.netlify/functions/gateway?kc_path=/scenario/:splat"
   status = 200
