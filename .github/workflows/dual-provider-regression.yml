@@ -8,7 +8,10 @@ on:
       - 'netlify/functions/gateway.mjs'
       - 'netlify.toml'
       - 'package.json'
+      - 'tests/**'
       - '.github/workflows/dual-provider-regression.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
