@@ -1,0 +1,68 @@
+name: Security Sprint 6 Gateway TÜV
+
+on:
+  push:
+    branches:
+      - security-hardening-sprint6-impl
+  workflow_dispatch:
+
+jobs:
+  gateway-security-tuv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Full regression suite 50+
+        run: npm test
+
+      - name: Syntax TÜV
+        run: |
+          node --check src/secure-worker.js
+          node --check src/security.js
+          node --check src/security-store.js
+          node --check src/security-scope.js
+          node --check src/security-abuse.js
+          node --check src/worker.js
+
+      - name: Wrangler compile check
+        run: npx wrangler deploy --dry-run --outdir dist-dry-run
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Security architecture assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'consumeRateLimitInStore' src/secure-worker.js
+          grep -q 'kc_security_rate_limits' src/security-store.js
+          grep -q 'MAX_BURST_BUCKETS' src/security-abuse.js
+          grep -q 'cf-connecting-ip' src/security-abuse.js
+          grep -q 'authorizeDeviceScope' src/secure-worker.js
+          grep -q 'reserveNonceInStore' src/secure-worker.js
+          if grep -Eiq '(private[_-]?key|master[_-]?key|device[_-]?secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{32,}' src/*.js; then
+            echo 'Possible embedded secret found'
+            exit 1
+          fi
+          echo 'Gateway Sprint 6 assertions passed.'
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
