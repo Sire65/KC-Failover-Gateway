@@ -2,20 +2,24 @@ import worker from './worker.js';
 import { authenticateRequest, allowedOrigin, corsHeaders } from './security.js';
 import { resolveDeviceFromStore, reserveNonceInStore, purgeExpiredNonces } from './security-store.js';
 import { authorizeDeviceScope } from './security-scope.js';
+import { validateRequestEnvelope, enforceBodyLimit, enforceBurstLimit } from './security-abuse.js';
 
 const PROTECTED_PREFIXES=['/sync/'];
 function isProtected(pathname){return PROTECTED_PREFIXES.some(prefix=>pathname.startsWith(prefix));}
-function securityJson(request,env,body,status){return new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...corsHeaders(request,env)}});}
+function securityJson(request,env,body,status,extraHeaders={}){return new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...corsHeaders(request,env),...extraHeaders}});}
 function secureResponse(request,env,response){
   const headers=new Headers(response.headers);headers.delete('access-control-allow-origin');headers.delete('access-control-allow-credentials');headers.set('vary','Origin');
   const origin=allowedOrigin(request,env);if(origin)headers.set('access-control-allow-origin',origin);
   headers.set('x-content-type-options','nosniff');headers.set('referrer-policy','no-referrer');headers.set('permissions-policy','camera=(), microphone=(), geolocation=()');headers.set('content-security-policy',"default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  headers.set('cross-origin-resource-policy','same-site');
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
 }
 
 export default {
   async fetch(request,env,ctx){
     const url=new URL(request.url);const origin=request.headers.get('origin');
+    const envelope=validateRequestEnvelope(request);
+    if(!envelope.ok)return securityJson(request,env,{status:'ERROR',error:envelope.code},envelope.status,envelope.status===405?{'allow':'GET, POST, OPTIONS'}:{});
     if(request.method==='OPTIONS'){
       if(origin&&!allowedOrigin(request,env))return securityJson(request,env,{status:'ERROR',error:'ORIGIN_NOT_ALLOWED'},403);
       return new Response(null,{status:204,headers:corsHeaders(request,env)});
@@ -23,6 +27,10 @@ export default {
     if(origin&&!allowedOrigin(request,env))return securityJson(request,env,{status:'ERROR',error:'ORIGIN_NOT_ALLOWED'},403);
 
     if(isProtected(url.pathname)){
+      const bodyLimit=await enforceBodyLimit(request);
+      if(!bodyLimit.ok)return securityJson(request,env,{status:'ERROR',error:bodyLimit.code},bodyLimit.status);
+      const burst=enforceBurstLimit(request);
+      if(!burst.ok)return securityJson(request,env,{status:'ERROR',error:burst.code},burst.status,{'retry-after':String(burst.retryAfter||60)});
       const useDurableStore=String(env.KC_SECURITY_STORE_MODE||'durable').toLowerCase()==='durable';
       const auth=await authenticateRequest(request,env,useDurableStore?{
         deviceResolver:(deviceId)=>resolveDeviceFromStore(env,deviceId),
