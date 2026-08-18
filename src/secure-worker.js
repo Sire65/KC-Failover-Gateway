@@ -1,6 +1,6 @@
 import worker from './worker.js';
 import { authenticateRequest, allowedOrigin, corsHeaders } from './security.js';
-import { resolveDeviceFromStore, reserveNonceInStore, purgeExpiredNonces } from './security-store.js';
+import { resolveDeviceFromStore, reserveNonceInStore, purgeExpiredNonces, consumeRateLimitInStore, purgeStaleRateLimits } from './security-store.js';
 import { authorizeDeviceScope } from './security-scope.js';
 import { validateRequestEnvelope, enforceBodyLimit, enforceBurstLimit } from './security-abuse.js';
 
@@ -37,9 +37,20 @@ export default {
         replayStore:(nonce)=>reserveNonceInStore(env,nonce)
       }:{});
       if(!auth.ok)return securityJson(request,env,{status:'ERROR',error:auth.code},auth.status);
+      if(useDurableStore){
+        let durableRate;
+        try{durableRate=await consumeRateLimitInStore(env,{deviceId:auth.deviceId,windowSeconds:60,limit:120});}
+        catch{return securityJson(request,env,{status:'ERROR',error:'SECURITY_STORE_UNAVAILABLE'},503);}
+        if(!durableRate.ok)return securityJson(request,env,{status:'ERROR',error:'RATE_LIMITED'},429,{'retry-after':String(durableRate.retryAfter||60)});
+      }
       const scope=authorizeDeviceScope(auth,request);
       if(!scope.ok)return securityJson(request,env,{status:'ERROR',error:scope.code},scope.status);
-      if(Math.random()<0.01 && ctx?.waitUntil)ctx.waitUntil(purgeExpiredNonces(env,{limit:500}).catch(()=>{}));
+      if(Math.random()<0.01 && ctx?.waitUntil){
+        ctx.waitUntil(Promise.allSettled([
+          purgeExpiredNonces(env,{limit:500}),
+          purgeStaleRateLimits(env,{olderThanSeconds:3600,limit:500})
+        ]));
+      }
     }
     const response=await worker.fetch(request,env,ctx);return secureResponse(request,env,response);
   }
