@@ -22,6 +22,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: TÜV security release gate
+        run: npm run audit:tuv
+
       - name: Validate Wrangler config
         run: npx wrangler deploy --dry-run
 
@@ -90,5 +93,5 @@ jobs:
           echo "$response"
           RESPONSE="$response" node --input-type=module <<'NODE'
           const body=JSON.parse(process.env.RESPONSE||"{}");
-          if(body.status!=="PASS" || !Array.isArray(body.results) || body.results.length!==3) throw new Error(JSON.stringify(body));
+          if(body.status!=="PASS" || !Array.isArray(body.results) || body.results.length!==6) throw new Error(JSON.stringify(body));
           NODE
