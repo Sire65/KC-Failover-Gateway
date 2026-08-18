@@ -2,6 +2,30 @@
   functions = "netlify/functions"
 
 [[redirects]]
+  from = "/scenario/*"
+  to = "/.netlify/functions/gateway?kc_path=/scenario/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/supergau/*"
+  to = "/.netlify/functions/gateway?kc_path=/supergau/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/supergau"
+  to = "/.netlify/functions/gateway?kc_path=/supergau"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/sync/*"
+  to = "/.netlify/functions/gateway?kc_path=/sync/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/.netlify/functions/gateway"
   status = 200
