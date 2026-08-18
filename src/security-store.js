@@ -44,6 +44,32 @@ export async function reserveNonceInStore(env, { deviceId, nonce, timestamp, ttl
   });
 }
 
+export async function consumeRateLimitInStore(env, { deviceId, windowSeconds=60, limit=120 }) {
+  const safeWindow = Math.max(10, Math.min(3600, Number(windowSeconds)||60));
+  const safeLimit = Math.max(10, Math.min(10000, Number(limit)||120));
+  return withClient(env, async client => {
+    const r = await client.query(
+      `INSERT INTO public.kc_security_rate_limits(device_id, window_start, request_count, updated_at)
+       VALUES($1, now(), 1, now())
+       ON CONFLICT (device_id) DO UPDATE SET
+         window_start = CASE
+           WHEN public.kc_security_rate_limits.window_start <= now() - ($2::text || ' seconds')::interval THEN now()
+           ELSE public.kc_security_rate_limits.window_start
+         END,
+         request_count = CASE
+           WHEN public.kc_security_rate_limits.window_start <= now() - ($2::text || ' seconds')::interval THEN 1
+           ELSE public.kc_security_rate_limits.request_count + 1
+         END,
+         updated_at = now()
+       RETURNING request_count,
+         GREATEST(1, CEIL(EXTRACT(EPOCH FROM ((window_start + ($2::text || ' seconds')::interval) - now()))))::int AS retry_after`,
+      [deviceId, safeWindow]
+    );
+    const count = Number(r.rows[0]?.request_count || 0);
+    return { ok: count <= safeLimit, count, remaining: Math.max(0, safeLimit-count), retryAfter: Number(r.rows[0]?.retry_after || safeWindow) };
+  });
+}
+
 export async function purgeExpiredNonces(env, { limit=1000 }={}) {
   const safeLimit = Math.max(1, Math.min(10000, Number(limit)||1000));
   return withClient(env, async client => {
@@ -55,6 +81,23 @@ export async function purgeExpiredNonces(env, { limit=1000 }={}) {
          ORDER BY expires_at
          LIMIT $1
        )`, [safeLimit]
+    );
+    return r.rowCount;
+  });
+}
+
+export async function purgeStaleRateLimits(env, { olderThanSeconds=3600, limit=1000 }={}) {
+  const safeAge = Math.max(120, Math.min(86400, Number(olderThanSeconds)||3600));
+  const safeLimit = Math.max(1, Math.min(10000, Number(limit)||1000));
+  return withClient(env, async client => {
+    const r = await client.query(
+      `DELETE FROM public.kc_security_rate_limits
+       WHERE ctid IN (
+         SELECT ctid FROM public.kc_security_rate_limits
+         WHERE updated_at < now() - ($1::text || ' seconds')::interval
+         ORDER BY updated_at
+         LIMIT $2
+       )`, [safeAge, safeLimit]
     );
     return r.rowCount;
   });
