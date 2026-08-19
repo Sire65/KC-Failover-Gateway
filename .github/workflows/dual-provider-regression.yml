@@ -11,6 +11,10 @@ on:
       - '.github/workflows/dual-provider-regression.yml'
   workflow_dispatch:
 
+concurrency:
+  group: kc-dual-provider-main
+  cancel-in-progress: true
+
 jobs:
   dual-provider:
     runs-on: ubuntu-latest
