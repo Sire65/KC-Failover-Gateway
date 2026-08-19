@@ -15,6 +15,12 @@
   force = true
 
 [[redirects]]
+  from = "/test4"
+  to = "/.netlify/functions/test4"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/scenario/*"
   to = "/.netlify/functions/gateway?kc_path=/scenario/:splat"
   status = 200
