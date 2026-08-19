@@ -6,6 +6,10 @@ const AUTH_VERSION = "KC-GW-HMAC-V1";
 const AUTH_WINDOW_MS = 5 * 60 * 1000;
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT = 240;
+const DEFAULT_PAGE_SIZE = 500;
+const MAX_PAGE_SIZE = 1000;
+const MAX_RECONCILE_IDS = 1000;
+const MAX_RESTORE_PAGES = 200;
 const NONCE_CACHE = new Map();
 const RATE_CACHE = new Map();
 
@@ -24,6 +28,8 @@ function corsHeaders(request,env){
 function json(request,env,body,status=200){return new Response(JSON.stringify(body),{status,headers:{...JSON_HEADERS,...corsHeaders(request,env)}})}
 function cleanErrorCode(value){return /^[A-Z0-9_:-]{1,80}$/.test(String(value||""))?String(value):"INTERNAL_ERROR"}
 function safeAuthError(request,env,result){return json(request,env,{status:"ERROR",error:cleanErrorCode(result?.code||"AUTH_REQUIRED")},result?.status||401)}
+export function boundedPageLimit(value){const n=Number(value);return Number.isInteger(n)&&n>0?Math.min(MAX_PAGE_SIZE,n):DEFAULT_PAGE_SIZE}
+function cleanCursor(value){const text=String(value||"").trim();if(!text)return null;if(text.length>160||!/^[A-Za-z0-9._:-]+$/.test(text))throw new Error("INVALID_CURSOR");return text}
 
 function deviceRegistry(env){
   try{
@@ -85,8 +91,19 @@ async function runFallbackReadWriteProbe(env){const marker=crypto.randomUUID(),t
 function chooseBackend(p,f){return p?"SUPABASE":f?"NEON":"LOCAL_QUEUE"}
 function cleanTransaction(row){if(!row||typeof row!=="object")throw new Error("INVALID_TRANSACTION");const transactionId=String(row.transactionId||"").trim(),registerId=String(row.registerId||"").trim();if(!transactionId||transactionId.length>160)throw new Error("INVALID_TRANSACTION_ID");if(!registerId||registerId.length>100)throw new Error("INVALID_REGISTER_ID");const payload=JSON.stringify(row);if(payload.length>180000)throw new Error("TRANSACTION_TOO_LARGE");return{transactionId,registerId,registerName:String(row.registerName||"").slice(0,160)||null,occurredAt:row.endTime||row.time||row.startTime||null,recordHash:row.recordHash?String(row.recordHash).slice(0,256):null,payload:row}}
 async function saveTransactions(env,inputRows){if(!Array.isArray(inputRows)||inputRows.length<1||inputRows.length>100)throw new Error("INVALID_BATCH_SIZE");const rows=inputRows.map(cleanTransaction);return withNeon(env,async c=>{await c.query("BEGIN");const results=[];try{for(const row of rows){const ins=await c.query(`INSERT INTO public.kc_failover_transactions (transaction_id,register_id,register_name,occurred_at,record_hash,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (transaction_id) DO NOTHING RETURNING transaction_id`,[row.transactionId,row.registerId,row.registerName,row.occurredAt,row.recordHash,JSON.stringify(row.payload)]);if(ins.rowCount===1){results.push({transactionId:row.transactionId,status:"STORED"});continue}const ex=await c.query("SELECT record_hash,payload FROM public.kc_failover_transactions WHERE transaction_id=$1",[row.transactionId]);const old=ex.rows[0],sameHash=Boolean(row.recordHash&&old?.record_hash&&row.recordHash===old.record_hash),samePayload=JSON.stringify(old?.payload??null)===JSON.stringify(row.payload);results.push({transactionId:row.transactionId,status:(!sameHash&&!samePayload)?"CONFLICT":"ALREADY_STORED"})}await c.query("COMMIT");return results}catch(e){await c.query("ROLLBACK");throw e}})}
-async function restoreTransactions(env,registerId,since){if(!registerId||registerId.length>100)throw new Error("INVALID_REGISTER_ID");return withNeon(env,async c=>{const p=[registerId];let w="register_id=$1";if(since){p.push(since);w+=" AND occurred_at >= $2::timestamptz"}const r=await c.query(`SELECT payload FROM public.kc_failover_transactions WHERE ${w} ORDER BY occurred_at NULLS LAST,received_at LIMIT 5000`,p);return r.rows.map(x=>x.payload)})}
-async function reconcileTransactions(env,registerId,ids){if(!registerId||registerId.length>100)throw new Error("INVALID_REGISTER_ID");if(!Array.isArray(ids)||ids.length>5000)throw new Error("INVALID_ID_LIST");const localIds=[...new Set(ids.map(String).filter(Boolean))];return withNeon(env,async c=>{const r=await c.query("SELECT transaction_id FROM public.kc_failover_transactions WHERE register_id=$1",[registerId]),remote=new Set(r.rows.map(x=>x.transaction_id)),local=new Set(localIds);return{missingRemote:localIds.filter(id=>!remote.has(id)),missingLocal:[...remote].filter(id=>!local.has(id)),remoteCount:remote.size,localCount:local.size}})}
+async function restorePage(env,registerId,{since=null,afterId=null,limit=DEFAULT_PAGE_SIZE}={}){
+  if(!registerId||registerId.length>100)throw new Error("INVALID_REGISTER_ID");const pageLimit=boundedPageLimit(limit),cursor=cleanCursor(afterId);
+  return withNeon(env,async c=>{const p=[registerId];let w="register_id=$1";if(since){p.push(since);w+=` AND occurred_at >= $${p.length}::timestamptz`}if(cursor){p.push(cursor);w+=` AND transaction_id > $${p.length}`}p.push(pageLimit);const r=await c.query(`SELECT transaction_id,payload FROM public.kc_failover_transactions WHERE ${w} ORDER BY transaction_id ASC LIMIT $${p.length}`,p),rows=r.rows||[],nextCursor=rows.length===pageLimit?rows.at(-1)?.transaction_id||null:null;return{transactions:rows.map(x=>x.payload),nextCursor,count:rows.length}})
+}
+async function restoreTransactions(env,registerId,since){let out=[],afterId=null;for(let page=0;page<MAX_RESTORE_PAGES;page++){const r=await restorePage(env,registerId,{since,afterId,limit:MAX_PAGE_SIZE});out.push(...r.transactions);if(!r.nextCursor)return out;afterId=r.nextCursor}throw new Error("RESTORE_PAGE_LIMIT")}
+async function listIdPage(env,registerId,{afterId=null,limit=MAX_PAGE_SIZE}={}){
+  if(!registerId||registerId.length>100)throw new Error("INVALID_REGISTER_ID");const pageLimit=boundedPageLimit(limit),cursor=cleanCursor(afterId);
+  return withNeon(env,async c=>{const p=[registerId];let w="register_id=$1";if(cursor){p.push(cursor);w+=` AND transaction_id > $${p.length}`}p.push(pageLimit);const r=await c.query(`SELECT transaction_id FROM public.kc_failover_transactions WHERE ${w} ORDER BY transaction_id ASC LIMIT $${p.length}`,p),ids=(r.rows||[]).map(x=>x.transaction_id),nextCursor=ids.length===pageLimit?ids.at(-1)||null:null;return{transactionIds:ids,nextCursor,count:ids.length}})
+}
+async function reconcileTransactions(env,registerId,ids){
+  if(!registerId||registerId.length>100)throw new Error("INVALID_REGISTER_ID");if(!Array.isArray(ids)||ids.length>MAX_RECONCILE_IDS)throw new Error("INVALID_ID_LIST");const localIds=[...new Set(ids.map(String).filter(Boolean))];if(!localIds.length)return{missingRemote:[],matchedCount:0,localCount:0};
+  return withNeon(env,async c=>{const r=await c.query("SELECT transaction_id FROM public.kc_failover_transactions WHERE register_id=$1 AND transaction_id = ANY($2::text[])",[registerId,localIds]),remote=new Set((r.rows||[]).map(x=>x.transaction_id));return{missingRemote:localIds.filter(id=>!remote.has(id)),matchedCount:remote.size,localCount:localIds.length}})
+}
 async function deleteTestTransaction(env,id){return withNeon(env,c=>c.query("DELETE FROM public.kc_failover_transactions WHERE transaction_id=$1",[id]))}
 async function scenario1(env){const a=await checkSupabase(env),f=await runFallbackReadWriteProbe(env),b=await checkSupabase(env),pass=a.reachable&&f.readWrite&&b.reachable;return{id:1,name:"Supabase down -> Neon -> Supabase recovery",status:pass?"PASS":"FAIL",before:a,simulatedOutage:{primaryForcedDown:true,activeBackend:"NEON",fallback:f},recovery:{primary:b,activeBackend:b.reachable?"SUPABASE":"NEON"},safeSimulation:true}}
 async function scenario2(env){const p=await checkSupabase(env),f=await checkNeon(env),activeBackend=chooseBackend(p.reachable,false);return{id:2,name:"Neon down while Supabase remains healthy",status:p.reachable&&activeBackend==="SUPABASE"?"PASS":"FAIL",primary:p,fallbackBeforeSimulation:f,simulatedFallbackDown:true,activeBackend,safeSimulation:true}}
@@ -116,10 +133,13 @@ export default{async fetch(request,env){
       const b=await readBody();for(const tx of b.transactions||[])assertRegisterAllowed(auth,tx?.registerId);const r=await saveTransactions(env,b.transactions),conflicts=r.filter(x=>x.status==="CONFLICT");return json(request,env,{status:conflicts.length?"PARTIAL":"OK",results:r,conflicts},conflicts.length?207:200)
     }
     if(path==="/sync/transactions"&&request.method==="GET"){
-      const registerId=url.searchParams.get("register_id")||"",since=url.searchParams.get("since")||null;assertRegisterAllowed(auth,registerId);const t=await restoreTransactions(env,registerId,since);return json(request,env,{status:"OK",registerId,count:t.length,transactions:t})
+      const registerId=url.searchParams.get("register_id")||"",since=url.searchParams.get("since")||null,afterId=url.searchParams.get("after_id")||null,limit=url.searchParams.get("limit")||DEFAULT_PAGE_SIZE;assertRegisterAllowed(auth,registerId);const page=await restorePage(env,registerId,{since,afterId,limit});return json(request,env,{status:"OK",registerId,...page})
+    }
+    if(path==="/sync/ids"&&request.method==="GET"){
+      const registerId=url.searchParams.get("register_id")||"",afterId=url.searchParams.get("after_id")||null,limit=url.searchParams.get("limit")||MAX_PAGE_SIZE;assertRegisterAllowed(auth,registerId);const page=await listIdPage(env,registerId,{afterId,limit});return json(request,env,{status:"OK",registerId,...page})
     }
     if(path==="/sync/reconcile"&&request.method==="POST"){
-      const b=await readBody(),registerId=String(b.registerId||"");assertRegisterAllowed(auth,registerId);const r=await reconcileTransactions(env,registerId,b.transactionIds||[]);return json(request,env,{status:"OK",...r})
+      const b=await readBody(),registerId=String(b.registerId||"");assertRegisterAllowed(auth,registerId);const r=await reconcileTransactions(env,registerId,b.transactionIds||[]);return json(request,env,{status:"OK",mode:"membership",...r})
     }
     if(path==="/supergau")return json(request,env,await scenario1(env));
     const m=path.match(/^\/scenario\/(\d+)$/);if(m){const fn=scenarios[Number(m[1])-1];if(!fn)return json(request,env,{status:"ERROR",error:"UNKNOWN_SCENARIO"},404);const r=await fn(env);return json(request,env,r,r.status==="PASS"?200:503)}
