@@ -8,7 +8,10 @@ on:
       - 'netlify/functions/gateway.mjs'
       - 'netlify.toml'
       - 'package.json'
+      - 'tests/**'
       - '.github/workflows/dual-provider-regression.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -27,3 +30,9 @@ jobs:
         run: node -e "import('./src/worker.js').then(m=>{if(typeof m.default?.fetch!=='function')process.exit(1);console.log('PASS shared fetch contract')})"
       - name: Netlify adapter contract
         run: node -e "import('./netlify/functions/gateway.mjs').then(m=>{if(typeof m.default!=='function')process.exit(1);console.log('PASS netlify adapter')})"
+      - name: Gateway HMAC auth regression
+        run: node tests/gateway-auth.test.mjs
+      - name: Gateway pagination contract
+        run: node tests/gateway-pagination-contract.test.mjs
+      - name: TÜV security release gate
+        run: npm run audit:tuv
