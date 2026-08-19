@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare-worker-main
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -90,5 +100,9 @@ jobs:
           echo "$response"
           RESPONSE="$response" node --input-type=module <<'NODE'
           const body=JSON.parse(process.env.RESPONSE||"{}");
-          if(body.status!=="PASS" || !Array.isArray(body.results) || body.results.length!==3) throw new Error(JSON.stringify(body));
+          if(body.status!=="PASS") throw new Error(JSON.stringify(body));
+          if(!Array.isArray(body.results)) throw new Error(`Missing results array: ${JSON.stringify(body)}`);
+          if(body.results.length < 9) throw new Error(`Expected at least 9 scenarios, got ${body.results.length}: ${JSON.stringify(body)}`);
+          if(Number(body.scenarioCount) !== body.results.length) throw new Error(`scenarioCount mismatch: ${JSON.stringify(body)}`);
+          if(body.results.some(result => result?.status !== "PASS")) throw new Error(`One or more scenarios failed: ${JSON.stringify(body)}`);
           NODE
