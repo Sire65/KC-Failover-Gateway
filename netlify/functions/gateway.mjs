@@ -1,5 +1,6 @@
 import worker from '../../src/worker.js';
 
+// Netlify gateway wrapper. The worker module currently exposes the 9-scenario Super-GAU matrix.
 function envShim() {
   const neon = process.env.NEON_DATABASE_URL || process.env.DATABASE_URL || '';
   const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '';
