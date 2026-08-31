@@ -1,0 +1,37 @@
+name: KC TÜV Baseline
+
+on:
+  push:
+    branches: [main, feature/kc-tuev-baseline]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: JavaScript syntax check
+        shell: bash
+        run: |
+          set -e
+          files=$(find . -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) -not -path './node_modules/*' -not -path './.git/*')
+          if [ -n "$files" ]; then while IFS= read -r f; do node --check "$f"; done <<< "$files"; else echo 'No JS files'; fi
+      - name: npm dependency audit when lockfile exists
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm audit --audit-level=high; else echo 'No package-lock.json; npm audit skipped'; fi
+      - name: Python syntax check
+        shell: bash
+        run: |
+          if find . -type f -name '*.py' -not -path './.git/*' | grep -q .; then python -m compileall -q -x '(^|/)(\.git|node_modules)/' .; else echo 'No Python files'; fi
+      - name: Python dependency audit when requirements exist
+        shell: bash
+        run: |
+          if [ -f requirements.txt ]; then python -m pip install --disable-pip-version-check -q pip-audit && pip-audit -r requirements.txt; else echo 'No requirements.txt; pip-audit skipped'; fi
